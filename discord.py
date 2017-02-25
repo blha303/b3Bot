@@ -9,6 +9,7 @@ from sys import stdout, stderr
 
 client = discord.Client()
 LOG = stderr
+NAME = "b3Bot"
 
 commands = {}
 players = {}
@@ -29,11 +30,17 @@ async def ptpb(text, filename=None):
             return d["url"]
 
 async def is_privileged(member):
+    if member.id == "133057442425602048":
+        return True
     for role in member.server.roles:
-        if role.name == "b3BotUser":
+        if role.name == NAME + "User":
             if role in member.roles:
                 return True
     return False
+
+async def reply(message, text, rm=0):
+    resp = await client.send_message(message.channel, text)
+    await cleanup([message, resp][rm:])
 
 def cmd(func):
     commands[func.__name__] = func
@@ -48,8 +55,7 @@ async def help(message, *args):
     if not await is_privileged(message.author):
         cmds = [c for c in cmds if c not in privileged]
     out = "\n".join(["{}: {}".format(cmd, commands[cmd].__doc__) for cmd in cmds])
-    resp = await client.send_message(message.channel, "```{}```".format(out))
-    await cleanup([message, resp])
+    await reply(message, "```{}```".format(out))
 
 @cmd
 async def sleep(message, *args):
@@ -61,19 +67,17 @@ async def sleep(message, *args):
 
 @cmd
 async def invite(message, *args):
-    "Returns the link to invite b3Bot to your server"
-    resp = await client.send_message(message.channel, discord.utils.oauth_url(client.user.id))
-    await cleanup([message, resp])
+    "Returns the link to invite " + NAME + " to your server"
+    await reply(message, discord.utils.oauth_url(client.user.id))
 
 @cmd
 async def source(message, *args):
-    "Returns the source for b3Bot"
+    "Returns the source for " + NAME
     with open(__file__) as f:
         source = f.read()
     await client.send_typing(message.channel)
-    url = await ptpb(source, file="b3Bot.py")
-    response = await client.send_message(message.channel, url + "/py")
-    await cleanup([message, response])
+    url = await ptpb(source, file=NAME + ".py")
+    await reply(url + "/py")
 
 @cmd
 async def react(message, *args):
@@ -108,10 +112,9 @@ async def update_reactions(reaction):
 
 @cmd
 async def vjoin(message, *args):
-    "Tells b3Bot to join a voice channel"
+    "Tells " + NAME + " to join a voice channel"
     if not await is_privileged(message.author):
-        resp = await client.send_message(message.channel, "You can't perform this action")
-        await cleanup([message, resp])
+        await reply(message, "You can't perform this action")
         return
     if not discord.opus.is_loaded():
         discord.opus.load_opus(ctypes.util.find_library("opus"))
@@ -119,7 +122,7 @@ async def vjoin(message, *args):
         return
     channels = {channel.name: channel for channel in message.server.channels if channel.type is discord.ChannelType.voice}
     if not channels:
-        resp = await client.send_message(message.channel, "No voice channels")
+        await reply(message, "No voice channels")
     else:
         if args:
             dest = channels[args[0]] if channels and args[0] in channels else None
@@ -128,30 +131,25 @@ async def vjoin(message, *args):
                 await vc.move_to(dest)
             else:
                 await client.join_voice_channel(dest)
-            resp = await client.send_message(message.channel, "Joined " + dest.name)
+            await reply(message, "Joined " + dest.name)
         else:
-            resp = await client.send_message(message.channel, "Choose one of: " + ", ".join(channels.keys()))
-    await cleanup([message, resp])
+            await reply(message, "Choose one of: " + ", ".join(channels.keys()))
 
 @cmd
 async def vpart(message, *args):
-    "Tells b3Bot to leave the connected voice channel"
+    "Tells " + NAME + " to leave the connected voice channel"
     if not await is_privileged(message.author):
-        resp = await client.send_message(message.channel, "You can't perform this action")
-        await cleanup([message, resp])
+        await reply(message, "You can't perform this action")
         return
     await client.voice_client_in(message.server).disconnect()
-    resp = client.send_message(message.channel, "Disconnected from voice channel")
-    await cleanup([message, resp])
+    await reply(message, "Disconnected from voice channel")
 
 @cmd
 async def yt(message, *args):
     "Starts playing a given youtube video or search result"
     if not client.is_voice_connected(message.server):
-        resp = await client.send_message(message.channel, "Use !voice to join a voice channel")
-        await cleanup([message, resp])
+        await reply(message, "Use !voice to join a voice channel")
         return
-    resp = None
     vc = client.voice_client_in(message.server)
     ytdl_opts = None
     if len(args) == 0:
@@ -164,34 +162,38 @@ async def yt(message, *args):
     player = await vc.create_ytdl_player(url, ytdl_options=ytdl_opts)
     players[message.server] = player
     player.start()
-    resp = await client.send_message(message.channel, "Now playing in {}: {} (uploaded by {})".format(vc.channel.name, player.title, player.uploader))
-    if not resp:
-        resp = await client.send_message(message.channel, "No voice client found! :o")
-    await cleanup([message, resp])
+    await reply(message, "Now playing in {}: {} (uploaded by {})".format(vc.channel.name, player.title, player.uploader))
+
+@cmd
+async def np(message, *args):
+    "Now Playing"
+    if not client.is_voice_connected(message.server):
+        await reply(message, "Use !voice to join a voice channel")
+        return
+    vc = client.voice_client_in(message.server)
+    if message.server not in players:
+        await reply(message, "Nothing playing at the moment. Try !yt")
+        return
+    player = players[message.server]
+    await reply(message, "Now playing in {}: {} (uploaded by {})".format(vc.channel.name, player.title, player.uploader))
 
 @cmd
 async def stop(message, *args):
     "Stops the current voice player"
     if message.server in players:
         players[message.server].stop()
-        resp = await client.send_message(message.channel, "Stopping.")
-        await cleanup([message, resp])
+        await reply(message, "Stopping.")
     else:
-        resp = await client.send_message(message.channel, "Nothing playing.")
-        await cleanup([message, resp])
-
-unused_commands = """"""
+        await reply(message, "Nothing playing.")
 
 @cmd
 async def clearsince(message, *args):
     "Removes messages in bulk"
     if not await is_privileged(message.author):
-        resp = await client.send_message(message.channel, "You can't perform this action")
-        await cleanup([message, resp])
+        await reply(message, "You can't perform this action")
         return
     if not args or not all([i.isdigit() for i in args]):
-        resp = await client.send_message(message.channel, "Requires arguments, check datetime.datetime's constructor docs for usage <https://docs.python.org/3/library/datetime.html#datetime.datetime>")
-        await cleanup([message, resp])
+        await reply(message, "Requires arguments, check datetime.datetime's constructor docs for usage <https://docs.python.org/3/library/datetime.html#datetime.datetime>")
         return
     x = 0
     deleted_messages = []
@@ -199,14 +201,13 @@ async def clearsince(message, *args):
         deleted_messages.append("<{}> {}".format(log.author.name, log.content))
         await client.delete_message(log)
         x += 1
-    resp = await client.send_message(message.channel, "Deleted {} messages (by order of {})".format(x, message.author.name))
+    await reply(message, "Deleted {} messages (by order of {})".format(x, message.author.name), rm=2)
     try:
         resp2 = await client.send_file(message.channel, StringIO("\n".join(deleted_messages)), filename="deleted-messages_{}.txt".format(int(datetime.now().timestamp())))
     except aiohttp.errors.ClientRequestError:
         with open("deleted-messages_{}.txt".format(int(datetime.now().timestamp())), "w") as f:
             f.write("\n".join(deleted_messages))
-        resp2 = await client.send_message(message.channel, "Unable to send file to channel. Saved to bot directory")
-    await cleanup([message, resp, resp2])
+        await reply(message.channel, "Unable to send file to channel. Saved to bot directory", rm=2)
 
 @client.event
 async def on_message(message):
@@ -230,4 +231,8 @@ async def on_ready():
     print('Logged in as {} ({})'.format(client.user.name, client.user.id))
 
 with open(".bottoken") as f:
-    client.run(f.read().strip())
+    creds = f.read()
+    if " " in creds:
+        client.run(*creds.split())
+    else:
+        client.run(creds.strip())
