@@ -12,11 +12,21 @@ LOG = stderr
 
 commands = {}
 players = {}
+react_msgs = {}
 
 async def cleanup(messages):
     await asyncio.sleep(30)
     for message in messages:
         await client.delete_message(message)
+
+async def ptpb(text, filename=None):
+    with aiohttp.ClientSession() as session:
+        data = aiohttp.FormData()
+        data.add_field("c", StringIO(text), filename=filename)
+        headers = {"Accept": "application/json"}
+        async with session.post("https://ptpb.pw", data=data, headers=headers) as resp:
+            d = await resp.json()
+            return d["url"]
 
 async def is_privileged(member):
     for role in member.server.roles:
@@ -34,7 +44,10 @@ def cmd(func):
 @cmd
 async def help(message, *args):
     "Returns this message"
-    out = "\n".join(["!{}: {}".format(command, cmd_func.__doc__) for command, cmd_func in commands.items()])
+    cmds = sorted(commands.keys())
+    if not await is_privileged(message.author):
+        cmds = [c for c in cmds if c not in privileged]
+    out = "\n".join(["{}: {}".format(cmd, commands[cmd].__doc__) for cmd in cmds])
     resp = await client.send_message(message.channel, "```{}```".format(out))
     await cleanup([message, resp])
 
@@ -58,29 +71,43 @@ async def source(message, *args):
     with open(__file__) as f:
         source = f.read()
     await client.send_typing(message.channel)
-    with aiohttp.ClientSession() as session:
-        data = aiohttp.FormData()
-        data.add_field("c", StringIO(source), filename="b3bot.py")
-        headers = {"Accept": "application/json"}
-        async with session.post("https://ptpb.pw", data=data, headers=headers) as resp:
-            d = await resp.json()
-            response = await client.send_message(message.channel, d["url"] + "/py")
+    url = await ptpb(source, file="b3Bot.py")
+    response = await client.send_message(message.channel, url + "/py")
     await cleanup([message, response])
 
 @cmd
 async def react(message, *args):
     "Lets users react!"
-    await cleanup([message])
-    msg = await client.send_message(message.channel, 'React with thumbs up or thumbs down.' if not args else " ".join(args))
-    while True:
-        res = await client.wait_for_reaction(['👍', '👎', '❌'], message=msg)
-        if res.reaction.emoji == '❌':
-            await client.edit_message(msg, "Okay :<")
-            await cleanup([res])
-            break
+    r = 'React with thumbs up or thumbs down.' if not args else " ".join(args)
+    msg = await client.send_message(message.channel, r)
+    await client.delete_message(message)
+    react_msgs[msg.id] = r
+
+@client.event
+async def on_reaction_add(reaction, user):
+    if reaction.message.id in react_msgs:
+        await update_reactions(reaction)
+
+@client.event
+async def on_reaction_remove(reaction, user):
+    if reaction.message.id in react_msgs:
+        await update_reactions(reaction)
+
+async def update_reactions(reaction):
+    def rcount(r, name):
+        return len([x for x in reaction.message.reactions if x.emoji == name])
+    if reaction.message.id in react_msgs:
+        await client.edit_message(reaction.message, "{} ({}){}".format(
+            react_msgs[reaction.message.id],
+            ":white_check_mark:" if rcount(reaction, "👍") > rcount(reaction, "👎")
+            else ":negative_squared_cross_mark:",
+            " (ended)" if rcount(reaction, "❌") > 0 else ""
+        ))
+        if reaction.emoji == "❌":
+            del react_msgs[reaction.message.id]
 
 @cmd
-async def voice(message, *args):
+async def vjoin(message, *args):
     "Tells b3Bot to join a voice channel"
     if not await is_privileged(message.author):
         resp = await client.send_message(message.channel, "You can't perform this action")
@@ -107,7 +134,8 @@ async def voice(message, *args):
     await cleanup([message, resp])
 
 @cmd
-async def vleave(message, *args):
+async def vpart(message, *args):
+    "Tells b3Bot to leave the connected voice channel"
     if not await is_privileged(message.author):
         resp = await client.send_message(message.channel, "You can't perform this action")
         await cleanup([message, resp])
@@ -152,30 +180,50 @@ async def stop(message, *args):
         resp = await client.send_message(message.channel, "Nothing playing.")
         await cleanup([message, resp])
 
-unused_commands = """@cmd
-async def clearlastday(message, *args):
-    "Removes messages from the past day"
+unused_commands = """"""
+
+@cmd
+async def clearsince(message, *args):
+    "Removes messages in bulk"
     if not await is_privileged(message.author):
         resp = await client.send_message(message.channel, "You can't perform this action")
         await cleanup([message, resp])
         return
-    n = datetime.now()
+    if not args or not all([i.isdigit() for i in args]):
+        resp = await client.send_message(message.channel, "Requires arguments, check datetime.datetime's constructor docs for usage <https://docs.python.org/3/library/datetime.html#datetime.datetime>")
+        await cleanup([message, resp])
+        return
     x = 0
-    async for log in client.logs_from(message.channel, after=datetime(n.year, n.month, n.day)):
+    deleted_messages = []
+    async for log in client.logs_from(message.channel, after=datetime(*[int(i) for i in args])):
+        deleted_messages.append("<{}> {}".format(log.author.name, log.content))
         await client.delete_message(log)
         x += 1
     resp = await client.send_message(message.channel, "Deleted {} messages (by order of {})".format(x, message.author.name))
-"""
+    try:
+        resp2 = await client.send_file(message.channel, StringIO("\n".join(deleted_messages)), filename="deleted-messages_{}.txt".format(int(datetime.now().timestamp())))
+    except aiohttp.errors.ClientRequestError:
+        with open("deleted-messages_{}.txt".format(int(datetime.now().timestamp())), "w") as f:
+            f.write("\n".join(deleted_messages))
+        resp2 = await client.send_message(message.channel, "Unable to send file to channel. Saved to bot directory")
+    await cleanup([message, resp, resp2])
 
 @client.event
 async def on_message(message):
-    print("<{}> {}".format(message.author.name, message.content), file=LOG)
+    txt = message.content
+    for user in message.mentions:
+        txt = txt.replace("<@{}>".format(user.id), "<@{}>".format(user.name))
+    print("<{}> {}".format(message.author.name, txt), file=LOG)
     if client.user.id == message.author.id:
         return
-    if message.content.startswith('!'):
+    if client.user in message.mentions:
+        cmd, *args = message.content.replace("<@{}>".format(client.user.id), "").split()
+    elif message.content.startswith("!"):
         cmd, *args = message.content[1:].split()
-        if cmd in commands:
-            await commands[cmd](message, *args)
+    else:
+        return
+    if cmd in commands:
+        await commands[cmd](message, *args)
 
 @client.event
 async def on_ready():
