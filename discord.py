@@ -233,6 +233,6 @@ async def on_ready():
 with open(".bottoken") as f:
     creds = f.read()
     if " " in creds:
-        client.run(*creds.split())
+        client.run(*creds.split(None, 1))
     else:
         client.run(creds.strip())
